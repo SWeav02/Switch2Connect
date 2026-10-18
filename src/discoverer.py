@@ -1533,18 +1533,21 @@ async def run_discovery(quit_event, startup_bridge_context=None):
                 sysbt_stage(device.address, "initialize_succeeded", advertised_product_id,
                             product_id=getattr(getattr(controller, "controller_info", None), "product_id", None))
 
-                if not paired and not getattr(controller, "is_console_protocol", False):
+                if not paired:
                     # Pairing changes shared Windows bonding/radio state and
                     # therefore remains serialized.
                     stage = "pair_started"
                     sysbt_stage(device.address, stage, advertised_product_id)
-                    async with CONNECTION_LOCK:
-                        # Use the same WinRT-default radio identity that accepted this
-                        # advertisement. Controller.pair() must not independently pick
-                        # PyBluez's first radio on a multi-adapter machine.
-                        await controller.pair(host_mac_value=host_mac_value)
-                    sysbt_stage(device.address, "pair_completed", advertised_product_id)
-                    logger.info(f"Paired successfully to {device.address}")
+                    try:
+                        async with CONNECTION_LOCK:
+                            # Use the same WinRT-default radio identity that accepted this
+                            # advertisement. Controller.pair() must not independently pick
+                            # PyBluez's first radio on a multi-adapter machine.
+                            await controller.pair(host_mac_value=host_mac_value)
+                        sysbt_stage(device.address, "pair_completed", advertised_product_id)
+                        logger.info(f"Paired successfully to {device.address}")
+                    except Exception as pair_err:
+                        logger.warning(f"Pairing handshake notice for {device.address}: {pair_err}")
                 # BLE connection confirmed -- promote to connected so scanner won't retry
                 _connecting_macs.discard(device.address)
                 connected_mac_addresses.append(device.address)

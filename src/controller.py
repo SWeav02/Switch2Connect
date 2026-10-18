@@ -4327,10 +4327,7 @@ class Controller:
             logger.warning(f"Invalid in-app joystick calibration for {self.device.address}: {e}")
 
     async def pair(self, host_mac_value=None):
-        if getattr(self, "is_console_protocol", False):
-            logger.info(f"Skipping pair handshake for console protocol controller {self.device.address}")
-            return
-        logger.info(f"Starting Switch 2 pair handshake for {self.device.address}...")
+        logger.info(f"Starting Switch 2 pair handshake for {self.device.address} (is_console={getattr(self, 'is_console_protocol', False)})...")
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
         # the controller bonds to the bridge and reconnects to it on a button press.
@@ -4338,12 +4335,45 @@ class Controller:
             from utils import get_local_mac_value
             host_mac_value = get_local_mac_value()
         mac_value = host_mac_value
-        await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_SET_MAC,b"\x00\x02" +  mac_value.to_bytes(6, 'little') + mac_value.to_bytes(6, 'little'))
+        mac_bytes = mac_value.to_bytes(6, 'little')
+        second_mac_bytes = bytes([(mac_bytes[0] - 1) & 0xFF]) + mac_bytes[1:]
+
+        # 1. 15/01 (Set Host MAC)
+        try:
+            await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_SET_MAC, b"\x00\x02" + mac_bytes + second_mac_bytes)
+        except Exception as e:
+            logger.debug(f"Pairing 15:01 with second_mac failed ({e}); trying twin MAC...")
+            await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_SET_MAC, b"\x00\x02" + mac_bytes + mac_bytes)
+
+        # 2. 15/04 (LTK1 exchange)
         ltk1 = bytes([0x00, 0xea, 0xbd, 0x47, 0x13, 0x89, 0x35, 0x42, 0xc6, 0x79, 0xee, 0x07, 0xf2, 0x53, 0x2c, 0x6c, 0x31])
-        await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_LTK1, ltk1)
+        reply1 = await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_LTK1, ltk1)
+        if reply1 and len(reply1) >= 17:
+            b1 = reply1[1:17]
+            ltk = bytes(a ^ b for a, b in zip(ltk1[1:], b1))
+        else:
+            ltk = bytes([0x40, 0xb0, 0x8a, 0x5f, 0xcd, 0x1f, 0x9b, 0x41, 0x12, 0x5c, 0xac, 0xc6, 0x3f, 0x38, 0xa0, 0x73])
+        self.ltk = ltk
+        logger.info(f"Negotiated LTK for {self.device.address}: {ltk.hex()}")
+
+        # 3. 15/02 (LTK2 verification)
         ltk2 = bytes([0x00, 0x40, 0xb0, 0x8a, 0x5f, 0xcd, 0x1f, 0x9b, 0x41, 0x12, 0x5c, 0xac, 0xc6, 0x3f, 0x38, 0xa0, 0x73])
         await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_LTK2, ltk2)
+
+        # 4. 15/03 (Finish)
         await self.write_command(COMMAND_PAIR, SUBCOMMAND_PAIR_FINISH, b'\0')
+
+        # 5. For console protocol controllers, commit storage via 03:07 and 03:09
+        if getattr(self, "is_console_protocol", False):
+            try:
+                reversed_ltk = bytes(reversed(ltk))
+                await self.write_command(0x03, 0x07, second_mac_bytes + reversed_ltk)
+                await self.write_command(0x03, 0x09, b"\x00")
+                logger.info(f"Committed console pairing storage (03:07/03:09) for {self.device.address}")
+            except Exception as e:
+                logger.debug(f"Console pairing store 03:07/03:09 response: {e}")
+
+        logger.info(f"Switch 2 pair handshake completed successfully for {self.device.address}")
 
     async def enable_input_notify_callback(self):
         # Immutable for a connected controller; avoid repeated attribute walks on
