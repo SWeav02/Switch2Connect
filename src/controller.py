@@ -4253,6 +4253,13 @@ class Controller:
 
     async def pair(self, host_mac_value=None):
         logger.info(f"Starting Switch 2 pair handshake for {self.device.address}...")
+        if getattr(self, "is_console_protocol", False) and self.client and hasattr(self.client, "pair"):
+            try:
+                logger.info(f"Attempting OS BLE pairing with protection_level=0 (None) for {self.device.address}...")
+                paired_ok = await self.client.pair(protection_level=0)
+                logger.info(f"OS BLE pairing result for {self.device.address}: {paired_ok}")
+            except Exception as e:
+                logger.warning(f"OS BLE pairing attempt note for {self.device.address}: {e}")
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
         # the controller bonds to the bridge and reconnects to it on a button press.
