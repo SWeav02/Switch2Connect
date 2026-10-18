@@ -2075,6 +2075,11 @@ class Controller:
                 raise Exception("Already connected")
         
             def disconnected_callback(client: BleakClient):
+                duration = time.time() - getattr(self, "connected_at", time.time())
+                logger.warning(
+                    f"Bleak disconnected_callback triggered for {getattr(self.device, 'address', 'unknown')} "
+                    f"after {duration:.2f}s (is_console={getattr(self, 'is_console_protocol', False)})"
+                )
                 if (self.disconnected_callback is not None):
                     asyncio.create_task(self.disconnected_callback(self))
         
@@ -2246,16 +2251,30 @@ class Controller:
                         except ImportError:
                             wd_gatt = None
 
-                    if wd_gatt and native_device and hasattr(native_device, 'bluetooth_device_id'):
+                    dev_id = (getattr(native_device, 'bluetooth_device_id', None)
+                              or getattr(native_device, 'BluetoothDeviceId', None))
+                    logger.info(
+                        "GattSession setup check for %s: wd_gatt=%s native_device=%s dev_id=%s",
+                        self.device.address, wd_gatt is not None, native_device is not None, dev_id is not None)
+
+                    if wd_gatt and dev_id:
                         try:
-                            if hasattr(wd_gatt, 'GattSession') and hasattr(wd_gatt.GattSession, 'from_device_id_async'):
-                                gatt_session = await wd_gatt.GattSession.from_device_id_async(native_device.bluetooth_device_id)
+                            gatt_cls = getattr(wd_gatt, 'GattSession', None)
+                            from_dev_fn = (getattr(gatt_cls, 'from_device_id_async', None)
+                                           or getattr(gatt_cls, 'FromDeviceIdAsync', None))
+                            if from_dev_fn:
+                                gatt_session = await from_dev_fn(dev_id)
                                 if gatt_session:
-                                    gatt_session.maintain_connection = True
+                                    if hasattr(gatt_session, 'maintain_connection'):
+                                        gatt_session.maintain_connection = True
+                                    elif hasattr(gatt_session, 'MaintainConnection'):
+                                        gatt_session.MaintainConnection = True
                                     self._gatt_session = gatt_session
                                     logger.info(f"Controller {self.device.address}: GattSession maintain_connection=True established")
+                            else:
+                                logger.warning(f"GattSession.FromDeviceIdAsync not found in {wd_gatt}")
                         except Exception as e:
-                            logger.warning(f"Failed to set GattSession maintain_connection for {self.device.address} (non-fatal): {e}")
+                            logger.warning(f"Failed to set GattSession maintain_connection for {self.device.address}: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to apply ThroughputOptimized (non-fatal): {e}")
 
@@ -2511,16 +2530,23 @@ class Controller:
         """Periodically send downlink vibration samples to prevent clone firmware sleep."""
         keepalive_cmd = b"\x00" * 17 + bytes([0x0A, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00])
         write_uuid = getattr(self, "command_write_uuid", None)
+        count = 0
         while self.client and getattr(self.client, "is_connected", False) and not getattr(self, "suspended", False):
             try:
-                await asyncio.sleep(8.0)
+                await asyncio.sleep(5.0)
             except asyncio.CancelledError:
                 break
             if self.client and getattr(self.client, "is_connected", False) and write_uuid:
                 try:
+                    count += 1
                     await self.client.write_gatt_char(write_uuid, keepalive_cmd, response=False)
+                    logger.info(
+                        "Console keepalive #%d sent to %s (connected=%.1fs)",
+                        count, getattr(self.device, 'address', 'unknown'),
+                        time.time() - getattr(self, 'connected_at', time.time())
+                    )
                 except Exception as exc:
-                    logger.debug(f"Console keepalive write on {getattr(self.device, 'address', 'unknown')}: {exc}")
+                    logger.warning(f"Console keepalive write error on {getattr(self.device, 'address', 'unknown')}: {exc}")
 
     async def initialize(self):
         try:
