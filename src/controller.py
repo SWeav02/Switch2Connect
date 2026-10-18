@@ -2235,6 +2235,27 @@ class Controller:
                             logger.warning(f"Could not extract valid WinRT BluetoothLEDevice for {self.device.address}, optimization skipped.")
                     else:
                         logger.info("ThroughputOptimized not available on this Windows version.")
+
+                    # Configure GattSession.maintain_connection = True to prevent Windows
+                    # from dropping the BLE ACL connection for unbonded peripherals
+                    try:
+                        import winrt.windows.devices.bluetooth.genericattributeprofile as wd_gatt
+                    except ImportError:
+                        try:
+                            import bleak_winrt.windows.devices.bluetooth.genericattributeprofile as wd_gatt
+                        except ImportError:
+                            wd_gatt = None
+
+                    if wd_gatt and native_device and hasattr(native_device, 'bluetooth_device_id'):
+                        try:
+                            if hasattr(wd_gatt, 'GattSession') and hasattr(wd_gatt.GattSession, 'from_device_id_async'):
+                                gatt_session = await wd_gatt.GattSession.from_device_id_async(native_device.bluetooth_device_id)
+                                if gatt_session:
+                                    gatt_session.maintain_connection = True
+                                    self._gatt_session = gatt_session
+                                    logger.info(f"Controller {self.device.address}: GattSession maintain_connection=True established")
+                        except Exception as e:
+                            logger.warning(f"Failed to set GattSession maintain_connection for {self.device.address} (non-fatal): {e}")
                 except Exception as e:
                     logger.warning(f"Failed to apply ThroughputOptimized (non-fatal): {e}")
 
@@ -2486,6 +2507,21 @@ class Controller:
         except Exception as e:
             logger.debug(f"Console features enable warning: {e}")
 
+    async def _console_keepalive_loop(self):
+        """Periodically send downlink vibration samples to prevent clone firmware sleep."""
+        keepalive_cmd = b"\x00" * 17 + bytes([0x0A, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00])
+        write_uuid = getattr(self, "command_write_uuid", None)
+        while self.client and getattr(self.client, "is_connected", False) and not getattr(self, "suspended", False):
+            try:
+                await asyncio.sleep(8.0)
+            except asyncio.CancelledError:
+                break
+            if self.client and getattr(self.client, "is_connected", False) and write_uuid:
+                try:
+                    await self.client.write_gatt_char(write_uuid, keepalive_cmd, response=False)
+                except Exception as exc:
+                    logger.debug(f"Console keepalive write on {getattr(self.device, 'address', 'unknown')}: {exc}")
+
     async def initialize(self):
         try:
             # Notifications/services are the readiness signal.  The legacy fixed
@@ -2734,7 +2770,8 @@ class Controller:
             self._input_settle_deadline = time.time() + 1.0
 
             if getattr(self, "is_console_protocol", False):
-                pass
+                if not getattr(self, "_console_keepalive_task", None) or self._console_keepalive_task.done():
+                    self._console_keepalive_task = asyncio.create_task(self._console_keepalive_loop())
             elif getattr(self.controller_info, 'product_id', 0) == NSO_GAMECUBE_CONTROLLER_PID:
                 await self.enableFeatures(0x27)
             elif not is_sw2_device:
@@ -2890,6 +2927,18 @@ class Controller:
         except Exception:
             logger.exception("Failed to release virtual keyboard inputs")
 
+
+        if getattr(self, "_console_keepalive_task", None):
+            self._console_keepalive_task.cancel()
+            self._console_keepalive_task = None
+        if getattr(self, "_gatt_session", None):
+            try:
+                self._gatt_session.maintain_connection = False
+                if hasattr(self._gatt_session, "close"):
+                    self._gatt_session.close()
+            except Exception:
+                pass
+            self._gatt_session = None
 
         if self.client:
             if self.client.is_connected:
@@ -4252,14 +4301,10 @@ class Controller:
             logger.warning(f"Invalid in-app joystick calibration for {self.device.address}: {e}")
 
     async def pair(self, host_mac_value=None):
+        if getattr(self, "is_console_protocol", False):
+            logger.info(f"Skipping pair handshake for console protocol controller {self.device.address}")
+            return
         logger.info(f"Starting Switch 2 pair handshake for {self.device.address}...")
-        if getattr(self, "is_console_protocol", False) and self.client and hasattr(self.client, "pair"):
-            try:
-                logger.info(f"Attempting OS BLE pairing with protection_level=0 (None) for {self.device.address}...")
-                paired_ok = await self.client.pair(protection_level=0)
-                logger.info(f"OS BLE pairing result for {self.device.address}: {paired_ok}")
-            except Exception as e:
-                logger.warning(f"OS BLE pairing attempt note for {self.device.address}: {e}")
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
         # the controller bonds to the bridge and reconnects to it on a button press.
