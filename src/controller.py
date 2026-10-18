@@ -2324,16 +2324,21 @@ class Controller:
             if not dp_kinds or not dp_prot:
                 return
 
-            # Combine confirm_only and provide_pin
-            kinds = 0
-            for k_name in ('confirm_only', 'ConfirmOnly', 'provide_pin', 'ProvidePin'):
-                val = getattr(dp_kinds, k_name, None)
-                if val is not None:
-                    kinds = kinds | int(val) if kinds else int(val)
+            # Construct valid DevicePairingKinds enum value
+            confirm_only = getattr(dp_kinds, 'confirm_only', getattr(dp_kinds, 'ConfirmOnly', None))
+            provide_pin = getattr(dp_kinds, 'provide_pin', getattr(dp_kinds, 'ProvidePin', None))
+            kinds = confirm_only
+            if provide_pin is not None and kinds is not None:
+                try:
+                    kinds = kinds | provide_pin
+                except Exception:
+                    pass
+            if kinds is None:
+                kinds = dp_kinds(1)
 
             prot_none = (getattr(dp_prot, 'none', None)
                          or getattr(dp_prot, 'None', None)
-                         or 1)
+                         or dp_prot(1))
 
             def on_pairing_requested(sender, args):
                 k = getattr(args, 'pairing_kind', getattr(args, 'PairingKind', 'unknown'))
@@ -2351,21 +2356,45 @@ class Controller:
             if add_fn:
                 token = add_fn(on_pairing_requested)
 
-            pair_fn = getattr(custom, 'pair_async', getattr(custom, 'PairAsync', None))
+            pair_with_prot_fn = (
+                getattr(custom, 'pair_with_protection_level_async', None)
+                or getattr(custom, 'PairWithProtectionLevelAsync', None)
+            )
+            pair_fn = (
+                getattr(custom, 'pair_async', None)
+                or getattr(custom, 'PairAsync', None)
+            )
+
+            logger.info(f"Starting WinRT CustomPairing for {self.device.address}...")
+            result = None
+            call_candidates = []
+            if pair_with_prot_fn:
+                call_candidates.append((pair_with_prot_fn, (kinds, prot_none)))
             if pair_fn:
-                logger.info(f"Starting WinRT CustomPairing (ProtectionLevel.None) for {self.device.address}...")
+                call_candidates.append((pair_fn, (kinds,)))
+                call_candidates.append((pair_fn, (kinds, prot_none)))
+
+            for fn, fn_args in call_candidates:
                 try:
-                    result = await asyncio.wait_for(pair_fn(kinds, prot_none), timeout=5.0)
-                    status_val = getattr(result, 'status', getattr(result, 'Status', result))
-                    try:
-                        status_str = status_val.name if hasattr(status_val, 'name') else str(status_val)
-                    except Exception:
-                        status_str = str(status_val)
-                    logger.info(f"WinRT CustomPairing completed for {self.device.address}: status={status_str}")
+                    result = await asyncio.wait_for(fn(*fn_args), timeout=5.0)
+                    break
+                except TypeError as te:
+                    logger.debug(f"{fn.__name__} with {len(fn_args)} arg(s) TypeError: {te}")
+                    continue
                 except asyncio.TimeoutError:
-                    logger.warning(f"WinRT CustomPairing timed out for {self.device.address}")
+                    logger.warning(f"{fn.__name__} timed out for {self.device.address}")
+                    break
                 except Exception as pe:
-                    logger.warning(f"WinRT CustomPairing error for {self.device.address}: {pe}")
+                    logger.warning(f"{fn.__name__} error for {self.device.address}: {pe}")
+                    break
+
+            if result is not None:
+                status_val = getattr(result, 'status', getattr(result, 'Status', result))
+                try:
+                    status_str = status_val.name if hasattr(status_val, 'name') else str(status_val)
+                except Exception:
+                    status_str = str(status_val)
+                logger.info(f"WinRT CustomPairing completed for {self.device.address}: status={status_str}")
             
             if token is not None:
                 rem_fn = getattr(custom, 'remove_pairing_requested', getattr(custom, 'RemovePairingRequested', None))
