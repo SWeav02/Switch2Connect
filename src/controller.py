@@ -2528,27 +2528,6 @@ class Controller:
         except Exception as e:
             logger.debug(f"Console features enable warning: {e}")
 
-    async def _console_keepalive_loop(self):
-        """Periodically send downlink vibration samples to prevent clone firmware sleep."""
-        keepalive_cmd = b"\x00" * 17 + bytes([0x0A, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00])
-        write_uuid = getattr(self, "command_write_uuid", None)
-        count = 0
-        while self.client and getattr(self.client, "is_connected", False) and not getattr(self, "suspended", False):
-            try:
-                await asyncio.sleep(5.0)
-            except asyncio.CancelledError:
-                break
-            if self.client and getattr(self.client, "is_connected", False) and write_uuid:
-                try:
-                    count += 1
-                    await self.client.write_gatt_char(write_uuid, keepalive_cmd, response=False)
-                    logger.info(
-                        "Console keepalive #%d sent to %s (connected=%.1fs)",
-                        count, getattr(self.device, 'address', 'unknown'),
-                        time.time() - getattr(self, 'connected_at', time.time())
-                    )
-                except Exception as exc:
-                    logger.warning(f"Console keepalive write error on {getattr(self.device, 'address', 'unknown')}: {exc}")
 
     async def initialize(self):
         try:
@@ -2797,12 +2776,9 @@ class Controller:
             self._input_settled = False
             self._input_settle_deadline = time.time() + 1.0
 
-            if getattr(self, "is_console_protocol", False):
-                if not getattr(self, "_console_keepalive_task", None) or self._console_keepalive_task.done():
-                    self._console_keepalive_task = asyncio.create_task(self._console_keepalive_loop())
-            elif getattr(self.controller_info, 'product_id', 0) == NSO_GAMECUBE_CONTROLLER_PID:
+            if getattr(self.controller_info, 'product_id', 0) == NSO_GAMECUBE_CONTROLLER_PID:
                 await self.enableFeatures(0x27)
-            elif not is_sw2_device:
+            elif not getattr(self, "is_console_protocol", False) and not is_sw2_device:
                 await self.enableFeatures(FEATURE_MOTION | FEATURE_MOUSE | FEATURE_MAGNOMETER)
             self._system_bt_diag("features_ready")
 
@@ -2956,9 +2932,6 @@ class Controller:
             logger.exception("Failed to release virtual keyboard inputs")
 
 
-        if getattr(self, "_console_keepalive_task", None):
-            self._console_keepalive_task.cancel()
-            self._console_keepalive_task = None
         if getattr(self, "_gatt_session", None):
             try:
                 self._gatt_session.maintain_connection = False
