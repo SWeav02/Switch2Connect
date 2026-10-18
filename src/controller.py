@@ -4252,7 +4252,13 @@ class Controller:
 
     async def pair(self, host_mac_value=None):
         if getattr(self, "is_console_protocol", False):
-            logger.info(f"Skipping pair handshake for console protocol controller {self.device.address}")
+            if self.client and hasattr(self.client, "pair"):
+                try:
+                    logger.info(f"Attempting OS BLE pairing for console protocol controller {self.device.address}...")
+                    paired_ok = await self.client.pair()
+                    logger.info(f"OS BLE pairing result for {self.device.address}: {paired_ok}")
+                except Exception as e:
+                    logger.info(f"OS BLE pairing attempt note for {self.device.address}: {e}")
             return
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
