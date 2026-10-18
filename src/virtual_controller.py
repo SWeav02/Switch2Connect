@@ -769,39 +769,41 @@ class VirtualController:
             request_mode = 'both'
         if not request_enabled:
             request_mode = 'off'
+        is_console_pair = any(getattr(c, "is_console_protocol", False) for c in (left, right) if c is not None)
         try:
-            if request_mode in ('left', 'both'):
-                retained_left = await left._create_merged_pair_connection_parameter_request(
-                    session_id, "Left")
-            if request_mode in ('right', 'both'):
-                retained_right = await right._create_merged_pair_connection_parameter_request(
-                    session_id, "Right")
-
-            if getattr(CONFIG, 'system_bt_merged_pair_coordinator', True):
-                coordinator = SystemBluetoothPairRumbleCoordinator(
-                    self, left, right, session_id,
-                    cadence_hz=getattr(CONFIG, 'system_bt_merged_pair_cadence_hz', 66),
-                    adaptive=getattr(CONFIG, 'system_bt_merged_pair_adaptive_cadence', True),
-                    request_mode=request_mode)
-                self._system_bt_pair_rumble_coordinator = coordinator
-                coordinator.start()
-            if request_mode == 'both_delayed':
-                async def create_delayed_requests():
-                    await asyncio.sleep(2.0)
-                    if (getattr(self, '_system_bt_pair_session_id', None) != session_id or
-                            getattr(self, '_system_bt_pair_controllers', None) != (left, right)):
-                        return
-                    delayed_left = await left._create_merged_pair_connection_parameter_request(
+            if not is_console_pair:
+                if request_mode in ('left', 'both'):
+                    retained_left = await left._create_merged_pair_connection_parameter_request(
                         session_id, "Left")
-                    delayed_right = await right._create_merged_pair_connection_parameter_request(
+                if request_mode in ('right', 'both'):
+                    retained_right = await right._create_merged_pair_connection_parameter_request(
                         session_id, "Right")
-                    logger.info(
-                        "System-BT merged delayed preferred requests session=%s left=%s right=%s",
-                        session_id, "retained" if delayed_left else "not-retained",
-                        "retained" if delayed_right else "not-retained",
-                        extra={"system_bt_merged": True})
-                self._system_bt_pair_request_task = asyncio.create_task(
-                    create_delayed_requests())
+
+                if getattr(CONFIG, 'system_bt_merged_pair_coordinator', True):
+                    coordinator = SystemBluetoothPairRumbleCoordinator(
+                        self, left, right, session_id,
+                        cadence_hz=getattr(CONFIG, 'system_bt_merged_pair_cadence_hz', 66),
+                        adaptive=getattr(CONFIG, 'system_bt_merged_pair_adaptive_cadence', True),
+                        request_mode=request_mode)
+                    self._system_bt_pair_rumble_coordinator = coordinator
+                    coordinator.start()
+                if request_mode == 'both_delayed':
+                    async def create_delayed_requests():
+                        await asyncio.sleep(2.0)
+                        if (getattr(self, '_system_bt_pair_session_id', None) != session_id or
+                                getattr(self, '_system_bt_pair_controllers', None) != (left, right)):
+                            return
+                        delayed_left = await left._create_merged_pair_connection_parameter_request(
+                            session_id, "Left")
+                        delayed_right = await right._create_merged_pair_connection_parameter_request(
+                            session_id, "Right")
+                        logger.info(
+                            "System-BT merged delayed preferred requests session=%s left=%s right=%s",
+                            session_id, "retained" if delayed_left else "not-retained",
+                            "retained" if delayed_right else "not-retained",
+                            extra={"system_bt_merged": True})
+                    self._system_bt_pair_request_task = asyncio.create_task(
+                        create_delayed_requests())
         except BaseException:
             # Cancellation or setup failure must not strand a request belonging
             # to a pair session that never completed activation.

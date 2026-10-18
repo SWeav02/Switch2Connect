@@ -2752,6 +2752,8 @@ class Controller:
         self.last_input_time = time.time()
 
     async def trigger_connection_haptics(self):
+        if getattr(self, "is_console_protocol", False):
+            return
         stop_vibration = VibrationData()
         try:
             bass_thump = VibrationData(lf_freq=0x060, lf_amp=0x350, hf_freq=0x0c0, hf_amp=0x250)
@@ -3030,6 +3032,7 @@ class Controller:
             if (sys.platform != "win32" or
                     getattr(self, 'is_esp32s3_bridge', False) or
                     getattr(self, 'is_wired_usb', False) or
+                    getattr(self, 'is_console_protocol', False) or
                     self.client is None):
                 return False
 
@@ -3775,6 +3778,8 @@ class Controller:
             sender_thread.start()
 
     async def set_vibration(self, vibration: VibrationData, vibration2 = VibrationData(), vibration3 = VibrationData(), ignore_freq_scaling = False, vibration_r1 = None, vibration_r2 = None, vibration_r3 = None, direct_amplitude = False, audio_overlay = None, audio_overlay_r = None, trigger_overlay = None, trigger_overlay_r = None, impulse_overlay = None, impulse_overlay_r = None, pair_sustain = True):
+        if getattr(self, "is_console_protocol", False):
+            return
         strength = getattr(CONFIG, "vibration_strength", 5)
         freq_setting = getattr(CONFIG, "vibration_frequency", 10)
         is_pro = self.is_pro_controller()
@@ -4164,6 +4169,8 @@ class Controller:
         self.vibration_packet_id += 1
 
     async def set_leds(self, player_number: int, reversed=False):
+        if getattr(self, "is_console_protocol", False):
+            return
         if player_number > 8: player_number = 8
         value = LED_PATTERN[player_number]
         if reversed: value = reverse_bits(value, 4)
@@ -4313,7 +4320,7 @@ class Controller:
                     )
                 if not hasattr(self, "_last_diag_slice"):
                     self._last_diag_slice = None
-                diag_slice = bytes([data[1], data[2], data[3], data[4]]) + bytes(data[8:min(16, len(data))])
+                diag_slice = bytes(data[2:8])
                 if diag_slice != self._last_diag_slice:
                     self._last_diag_slice = diag_slice
                     logger.info(
