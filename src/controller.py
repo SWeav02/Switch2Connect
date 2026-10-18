@@ -4301,6 +4301,28 @@ class Controller:
                 data, self.stick_calibration, self.second_stick_calibration,
                 product_id, gc_trigger_calib, deadzone_cache["values"],
                 is_console_protocol=getattr(self, "is_console_protocol", False))
+            if getattr(self, "is_console_protocol", False) and len(data) >= 8:
+                if not hasattr(self, "_console_diag_init"):
+                    self._console_diag_init = 0
+                if self._console_diag_init < 2:
+                    self._console_diag_init += 1
+                    logger.info(
+                        f"[Console Init {self.device.address}] len={len(data)} "
+                        f"raw[0:16]={to_hex(data[:16])} pid=0x{product_id:04x} "
+                        f"raw_btn=0x{data[2] | (data[3] << 8):04x} btns=0x{inputData.buttons:08x}"
+                    )
+                if not hasattr(self, "_last_diag_slice"):
+                    self._last_diag_slice = None
+                diag_slice = bytes([data[1], data[2], data[3], data[4]]) + bytes(data[8:min(16, len(data))])
+                if diag_slice != self._last_diag_slice:
+                    self._last_diag_slice = diag_slice
+                    logger.info(
+                        f"[Console State {self.device.address}] "
+                        f"raw[0:16]={to_hex(data[:16])} "
+                        f"b2={data[2]:02x} b3={data[3]:02x} b4={data[4]:02x} "
+                        f"raw_btn=0x{data[2] | (data[3] << 8):04x} "
+                        f"btns=0x{inputData.buttons:08x}"
+                    )
             phase_t1 = time.perf_counter_ns() if input_phase_diagnostics else 0
 
             # Connection settle gate: right after (re)connection the controller can
