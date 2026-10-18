@@ -4252,9 +4252,7 @@ class Controller:
             logger.warning(f"Invalid in-app joystick calibration for {self.device.address}: {e}")
 
     async def pair(self, host_mac_value=None):
-        if getattr(self, "is_console_protocol", False):
-            logger.info(f"Skipping pair handshake for console protocol controller {self.device.address}")
-            return
+        logger.info(f"Starting Switch 2 pair handshake for {self.device.address}...")
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
         # the controller bonds to the bridge and reconnects to it on a button press.

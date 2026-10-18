@@ -1533,7 +1533,7 @@ async def run_discovery(quit_event, startup_bridge_context=None):
                 sysbt_stage(device.address, "initialize_succeeded", advertised_product_id,
                             product_id=getattr(getattr(controller, "controller_info", None), "product_id", None))
 
-                if not paired and not getattr(controller, "is_console_protocol", False):
+                if not paired:
                     # Pairing changes shared Windows bonding/radio state and
                     # therefore remains serialized.
                     stage = "pair_started"
