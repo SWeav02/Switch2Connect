@@ -28,7 +28,10 @@ from bleak.exc import BleakError
 import asyncio
 import logging
 import json
-import bluetooth
+try:
+    import bluetooth
+except ImportError:
+    bluetooth = None
 import yaml
 from utils import to_hex, convert_mac_string_to_value, decodeu, show_notification
 import time
@@ -195,7 +198,10 @@ from bleak.exc import BleakError
 import asyncio
 import logging
 import json
-import bluetooth
+try:
+    import bluetooth
+except ImportError:
+    bluetooth = None
 import yaml
 from utils import to_hex, convert_mac_string_to_value, decodeu, show_notification
 import time
@@ -1355,7 +1361,7 @@ async def run_discovery(quit_event, startup_bridge_context=None):
                     logger.info(
                         "Bluetooth adapter and stack initialized successfully. Host MAC: %s (source=%s)",
                         host_mac_value, host_mac_source)
-                    if _SYSTEM_BT_DIAGNOSTICS:
+                    if _SYSTEM_BT_DIAGNOSTICS and bluetooth is not None:
                         try:
                             pybluez_addresses = await asyncio.to_thread(bluetooth.read_local_bdaddr)
                             pybluez_values = [convert_mac_string_to_value(value)

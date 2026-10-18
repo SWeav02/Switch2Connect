@@ -23,7 +23,10 @@ from bleak.backends.device import BLEDevice
 import asyncio
 BLE_CONNECTION_LOCK = asyncio.Lock()
 import logging
-import bluetooth
+try:
+    import bluetooth
+except ImportError:
+    bluetooth = None
 import win32api
 import win32con
 from dataclasses import dataclass
