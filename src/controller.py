@@ -2375,17 +2375,19 @@ class Controller:
                 call_candidates.append((pair_fn, (kinds, prot_none)))
 
             for fn, fn_args in call_candidates:
+                fn_name = getattr(fn, '__name__', str(fn))
                 try:
+                    logger.info(f"Invoking WinRT {fn_name} with {len(fn_args)} argument(s)...")
                     result = await asyncio.wait_for(fn(*fn_args), timeout=5.0)
                     break
                 except TypeError as te:
-                    logger.debug(f"{fn.__name__} with {len(fn_args)} arg(s) TypeError: {te}")
+                    logger.info(f"{fn_name} TypeError: {te}; trying next signature...")
                     continue
                 except asyncio.TimeoutError:
-                    logger.warning(f"{fn.__name__} timed out for {self.device.address}")
+                    logger.warning(f"{fn_name} timed out for {self.device.address}")
                     break
                 except Exception as pe:
-                    logger.warning(f"{fn.__name__} error for {self.device.address}: {pe}")
+                    logger.warning(f"{fn_name} error for {self.device.address}: {pe}")
                     break
 
             if result is not None:
