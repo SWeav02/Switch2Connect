@@ -2275,8 +2275,107 @@ class Controller:
                                 logger.warning(f"GattSession.FromDeviceIdAsync not found in {wd_gatt}")
                         except Exception as e:
                             logger.warning(f"Failed to set GattSession maintain_connection for {self.device.address}: {e}")
+
+                    # Attempt OS-level WinRT Custom Pairing with ProtectionLevel.None
+                    # to satisfy Windows BTHUSB security requirements for clone controllers
+                    if native_device and getattr(self, "advertised_product_id", None) in (JOYCON2_LEFT_PID, JOYCON2_RIGHT_PID):
+                        await self._ensure_winrt_custom_pairing(native_device)
                 except Exception as e:
                     logger.warning(f"Failed to apply ThroughputOptimized (non-fatal): {e}")
+
+    async def _ensure_winrt_custom_pairing(self, native_device):
+        """Pair controller with DevicePairingProtectionLevel.None via WinRT custom pairing
+        to prevent Windows BTHUSB from disconnecting upon unauthenticated SMP security requests.
+        """
+        try:
+            dev_info = (getattr(native_device, 'device_information', None)
+                        or getattr(native_device, 'DeviceInformation', None))
+            if not dev_info:
+                return
+            pairing = (getattr(dev_info, 'pairing', None)
+                       or getattr(dev_info, 'Pairing', None))
+            if not pairing:
+                return
+            
+            is_paired = getattr(pairing, 'is_paired', getattr(pairing, 'IsPaired', False))
+            logger.info(f"WinRT device pairing status for {self.device.address}: is_paired={is_paired}")
+            if is_paired:
+                return
+
+            custom = getattr(pairing, 'custom', None) or getattr(pairing, 'Custom', None)
+            if not custom:
+                logger.warning(f"WinRT custom pairing not available for {self.device.address}")
+                return
+
+            try:
+                import winrt.windows.devices.enumeration as wd_enum
+            except ImportError:
+                try:
+                    import bleak_winrt.windows.devices.enumeration as wd_enum
+                except ImportError:
+                    wd_enum = None
+
+            if not wd_enum:
+                logger.warning("winrt.windows.devices.enumeration not found for custom pairing")
+                return
+
+            dp_kinds = getattr(wd_enum, 'DevicePairingKinds', None)
+            dp_prot = getattr(wd_enum, 'DevicePairingProtectionLevel', None)
+            if not dp_kinds or not dp_prot:
+                return
+
+            # Combine confirm_only and provide_pin
+            kinds = 0
+            for k_name in ('confirm_only', 'ConfirmOnly', 'provide_pin', 'ProvidePin'):
+                val = getattr(dp_kinds, k_name, None)
+                if val is not None:
+                    kinds = kinds | int(val) if kinds else int(val)
+
+            prot_none = (getattr(dp_prot, 'none', None)
+                         or getattr(dp_prot, 'None', None)
+                         or 1)
+
+            def on_pairing_requested(sender, args):
+                k = getattr(args, 'pairing_kind', getattr(args, 'PairingKind', 'unknown'))
+                logger.info(f"WinRT PairingRequested event received for {self.device.address}: kind={k}")
+                try:
+                    accept_fn = getattr(args, 'accept', getattr(args, 'Accept', None))
+                    if accept_fn:
+                        accept_fn()
+                        logger.info(f"WinRT custom pairing accepted for {self.device.address}")
+                except Exception as ex:
+                    logger.warning(f"Error in accept callback for {self.device.address}: {ex}")
+
+            token = None
+            add_fn = getattr(custom, 'add_pairing_requested', getattr(custom, 'AddPairingRequested', None))
+            if add_fn:
+                token = add_fn(on_pairing_requested)
+
+            pair_fn = getattr(custom, 'pair_async', getattr(custom, 'PairAsync', None))
+            if pair_fn:
+                logger.info(f"Starting WinRT CustomPairing (ProtectionLevel.None) for {self.device.address}...")
+                try:
+                    result = await asyncio.wait_for(pair_fn(kinds, prot_none), timeout=5.0)
+                    status_val = getattr(result, 'status', getattr(result, 'Status', result))
+                    try:
+                        status_str = status_val.name if hasattr(status_val, 'name') else str(status_val)
+                    except Exception:
+                        status_str = str(status_val)
+                    logger.info(f"WinRT CustomPairing completed for {self.device.address}: status={status_str}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"WinRT CustomPairing timed out for {self.device.address}")
+                except Exception as pe:
+                    logger.warning(f"WinRT CustomPairing error for {self.device.address}: {pe}")
+            
+            if token is not None:
+                rem_fn = getattr(custom, 'remove_pairing_requested', getattr(custom, 'RemovePairingRequested', None))
+                if rem_fn:
+                    try:
+                        rem_fn(token)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"Failed to execute WinRT custom pairing for {self.device.address}: {e}")
 
     @staticmethod
     def _stick_cache_value(calibration):
