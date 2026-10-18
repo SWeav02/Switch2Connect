@@ -2629,29 +2629,30 @@ class Controller:
                     and self.client.is_gamecube_channel()
                 )
                 console_channel = self._detect_console_channel()
-                _sw2_consec_fail = 0
-                for cmd_id, subcmd_id, data in sw2_init_commands:
-                    try:
-                        await self.write_command(cmd_id, subcmd_id, data)
-                        _sw2_consec_fail = 0
-                        # Commands remain strictly serialised by write_command().
-                        # The old post-ACK 10 ms sleep added ~120 ms to every SW2
-                        # reconnect without providing a protocol completion signal.
-                        if (is_esp32_gamecube_init
-                                or not getattr(CONFIG, "sw2_zero_command_pacing", True)):
-                            await asyncio.sleep(0.01)
-                    except Exception as e:
-                        logger.warning(f"SW2 Init command {cmd_id:02x}:{subcmd_id:02x} failed: {e}")
-                        _sw2_consec_fail += 1
-                        if console_channel is not None and _sw2_consec_fail == 1:
-                            logger.info(f"Standard SW2 command failed on {self.device.address}; falling back to Console Protocol (NYXI / clone support)")
-                            self.is_console_protocol = True
-                            break
-                        if _sw2_consec_fail >= 3:
-                            raise Exception(
-                                f"SW2 init aborted: {_sw2_consec_fail} consecutive command failures "
-                                f"(last: {cmd_id:02x}:{subcmd_id:02x})"
-                            )
+                if console_channel is not None and not is_esp32_gamecube_init:
+                    logger.info(f"Console Protocol detected on {self.device.address}; skipping standard SW2 init commands.")
+                    self.is_console_protocol = True
+                else:
+                    _sw2_consec_fail = 0
+                    for cmd_id, subcmd_id, data in sw2_init_commands:
+                        try:
+                            await self.write_command(cmd_id, subcmd_id, data)
+                            _sw2_consec_fail = 0
+                            if (is_esp32_gamecube_init
+                                    or not getattr(CONFIG, "sw2_zero_command_pacing", True)):
+                                await asyncio.sleep(0.01)
+                        except Exception as e:
+                            logger.warning(f"SW2 Init command {cmd_id:02x}:{subcmd_id:02x} failed: {e}")
+                            _sw2_consec_fail += 1
+                            if console_channel is not None and _sw2_consec_fail == 1:
+                                logger.info(f"Standard SW2 command failed on {self.device.address}; falling back to Console Protocol (NYXI / clone support)")
+                                self.is_console_protocol = True
+                                break
+                            if _sw2_consec_fail >= 3:
+                                raise Exception(
+                                    f"SW2 init aborted: {_sw2_consec_fail} consecutive command failures "
+                                    f"(last: {cmd_id:02x}:{subcmd_id:02x})"
+                                )
 
             if getattr(self, "is_console_protocol", False) and console_channel:
                 await self._run_console_protocol_init(console_channel, command_response_callback)
@@ -4252,13 +4253,7 @@ class Controller:
 
     async def pair(self, host_mac_value=None):
         if getattr(self, "is_console_protocol", False):
-            if self.client and hasattr(self.client, "pair"):
-                try:
-                    logger.info(f"Attempting OS BLE pairing for console protocol controller {self.device.address}...")
-                    paired_ok = await self.client.pair()
-                    logger.info(f"OS BLE pairing result for {self.device.address}: {paired_ok}")
-                except Exception as e:
-                    logger.info(f"OS BLE pairing attempt note for {self.device.address}: {e}")
+            logger.info(f"Skipping pair handshake for console protocol controller {self.device.address}")
             return
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
