@@ -1166,6 +1166,16 @@ VIBRATION_WRITE_PRO_CONTROLLER_UUID = "cc483f51-9258-427d-a939-630c31f72b05"
 COMMAND_WRITE_UUID = "649d4ac9-8eb7-4e6c-af44-1ea54fe5f005"
 COMMAND_RESPONSE_UUID = "c765a961-d9d8-4d36-a20a-5315b111836a"
 
+# Console-protocol BLE GATT Characteristics UUID (used by Switch 2 console & NYXI Hyperion 3 clones)
+CONSOLE_SESSION_START_UUID = "00c5af5d-1964-4e30-8f51-1956f96bd282"
+CONSOLE_REPORT_RATE_UUID = "679d5510-5a24-4dee-9557-95df80486ecb"
+CONSOLE_COMMAND_LEFT_UUID = "ce49a830-dced-48ae-931e-c8cf88aadbea"
+CONSOLE_INPUT_LEFT_UUID = "cc1bbbb5-7354-4d32-a716-a81cb241a32a"
+CONSOLE_EXT_RESPONSE_LEFT_UUID = "63a3810f-aec7-474b-9010-3d52403cb996"
+CONSOLE_COMMAND_RIGHT_UUID = "65a724b3-f1e7-4a61-8078-a342376b27ff"
+CONSOLE_INPUT_RIGHT_UUID = "d5a9e01e-2ffc-4cca-b20c-8b67142bf442"
+CONSOLE_EXT_RESPONSE_RIGHT_UUID = "640ca58e-0e88-410c-a7f3-426faf2b690b"
+
 # Commands and subcommands
 COMMAND_LEDS = 0x09
 SUBCOMMAND_LEDS_SET_PLAYER = 0x07
@@ -1311,8 +1321,16 @@ class ControllerInputData:
 
     def __init__(self, data: bytes, left_stick_calibration: StickCalibrationData,
                  right_stick_calibration: StickCalibrationData, product_id: int = 0,
-                 gc_trigger_calib: list = None, joystick_deadzones=None):
+                 gc_trigger_calib: list = None, joystick_deadzones=None,
+                 is_console_protocol: bool = False):
         self.raw_data = data
+        is_console = bool(
+            is_console_protocol
+            or (product_id in (JOYCON2_LEFT_PID, JOYCON2_RIGHT_PID)
+                and len(data) >= 8 and data[4] == 0x07
+                and ((len(data) > 0x0E and data[0x0E] in (0x1E, 0x04, 0x28))
+                     or (len(data) > 0x0F and data[0x0F] in (0x1E, 0x04, 0x28))))
+        )
         
         if product_id == NSO_GAMECUBE_CONTROLLER_PID:
             self.time = data[0]
@@ -1418,6 +1436,76 @@ class ControllerInputData:
                 self.accelerometer = (0, 0, 0)
                 self.gyroscope = (0, 0, 0)
                 self.magnometer = (0, 0, 0)
+        elif is_console:
+            self.time = data[0]
+            level = min((data[1] >> 2) & 0x0F, 9)
+            self.battery_voltage = 3.2 + (level / 9.0) * 0.8
+            self.battery_current = 0.0
+            self.temperature = 25.0
+
+            raw_buttons = data[2] | (data[3] << 8)
+            buttons_val = 0
+            is_left = (product_id == JOYCON2_LEFT_PID)
+
+            if is_left:
+                if raw_buttons & (1 << 0): buttons_val |= SWITCH_BUTTONS["DOWN"]
+                if raw_buttons & (1 << 1): buttons_val |= SWITCH_BUTTONS["RIGHT"]
+                if raw_buttons & (1 << 2): buttons_val |= SWITCH_BUTTONS["LEFT"]
+                if raw_buttons & (1 << 3): buttons_val |= SWITCH_BUTTONS["UP"]
+                if raw_buttons & (1 << 4): buttons_val |= SWITCH_BUTTONS["L"]
+                if raw_buttons & (1 << 5): buttons_val |= SWITCH_BUTTONS["ZL"]
+                if raw_buttons & (1 << 6): buttons_val |= SWITCH_BUTTONS["MINUS"]
+                if raw_buttons & (1 << 7): buttons_val |= SWITCH_BUTTONS["L_STK"]
+                if raw_buttons & (1 << 8): buttons_val |= SWITCH_BUTTONS["CAPT"]
+                if raw_buttons & (1 << 14): buttons_val |= SWITCH_BUTTONS["SR_L"]
+                if raw_buttons & (1 << 15): buttons_val |= SWITCH_BUTTONS["SL_L"]
+
+                self.left_stick = get_stick_xy(data[5:8])
+                self.right_stick = (2048, 2047)
+                motion_offset = 0x0F
+                motion_len_offset = 0x0E
+            else:
+                if raw_buttons & (1 << 0): buttons_val |= SWITCH_BUTTONS["B"]
+                if raw_buttons & (1 << 1): buttons_val |= SWITCH_BUTTONS["A"]
+                if raw_buttons & (1 << 2): buttons_val |= SWITCH_BUTTONS["Y"]
+                if raw_buttons & (1 << 3): buttons_val |= SWITCH_BUTTONS["X"]
+                if raw_buttons & (1 << 4): buttons_val |= SWITCH_BUTTONS["R"]
+                if raw_buttons & (1 << 5): buttons_val |= SWITCH_BUTTONS["ZR"]
+                if raw_buttons & (1 << 6): buttons_val |= SWITCH_BUTTONS["PLUS"]
+                if raw_buttons & (1 << 7): buttons_val |= SWITCH_BUTTONS["R_STK"]
+                if raw_buttons & (1 << 8): buttons_val |= SWITCH_BUTTONS["HOME"]
+                if raw_buttons & (1 << 12): buttons_val |= SWITCH_BUTTONS["C"]
+                if raw_buttons & (1 << 14): buttons_val |= SWITCH_BUTTONS["SR_R"]
+                if raw_buttons & (1 << 15): buttons_val |= SWITCH_BUTTONS["SL_R"]
+
+                self.left_stick = (2048, 2047)
+                self.right_stick = get_stick_xy(data[5:8])
+                motion_offset = 0x10
+                motion_len_offset = 0x0F
+
+            self.buttons = buttons_val
+            self.mouse_coords = (0, 0)
+            self.mouse_roughness = 0
+            self.mouse_distance = 0
+            self.magnometer = (0, 0, 0)
+            self.gyroscope = (0, 0, 0)
+
+            accel_x, accel_y, accel_z = 0, 0, 0
+            if len(data) >= motion_offset + 0x1C and len(data) > motion_len_offset:
+                motion_len = data[motion_len_offset]
+                if motion_len >= 0x1C:
+                    first = motion_offset + 0x12
+                    low0 = data[first - 2] | (data[first - 1] << 8)
+                    low1 = data[first + 2] | (data[first + 3] << 8)
+                    low2 = data[first + 6] | (data[first + 7] << 8)
+                    if low0 == 0 and low1 == 0 and low2 == 0:
+                        raw_ax = decodes(data[first : first + 2])
+                        raw_ay = decodes(data[first + 4 : first + 6])
+                        raw_az = decodes(data[first + 8 : first + 10])
+                        accel_x = raw_ax
+                        accel_y = -raw_ay
+                        accel_z = raw_az
+            self.accelerometer = (accel_x, accel_y, accel_z)
         else:
             self.time = decodeu(data[0:4])
             self.buttons = decodeu(data[4:8])
@@ -2259,6 +2347,142 @@ class Controller:
         except Exception as e:
             logger.debug(f"Failed to persist controller fast cache: {e}")
 
+    def _detect_console_channel(self):
+        """Detect side-specific Console Protocol characteristics (NYXI Hyperion 3 / Switch 2 console channel)."""
+        services = getattr(self.client, "services", None)
+        if not services:
+            return None
+        all_chars = {}
+        for s in services:
+            for c in getattr(s, "characteristics", []):
+                all_chars[str(c.uuid).lower()] = c
+
+        left_cmd = CONSOLE_COMMAND_LEFT_UUID.lower()
+        left_inp = CONSOLE_INPUT_LEFT_UUID.lower()
+        right_cmd = CONSOLE_COMMAND_RIGHT_UUID.lower()
+        right_inp = CONSOLE_INPUT_RIGHT_UUID.lower()
+
+        if left_cmd in all_chars and left_inp in all_chars:
+            return {
+                "side": "Left",
+                "command_uuid": CONSOLE_COMMAND_LEFT_UUID,
+                "input_uuid": CONSOLE_INPUT_LEFT_UUID,
+                "ext_response_uuid": CONSOLE_EXT_RESPONSE_LEFT_UUID if CONSOLE_EXT_RESPONSE_LEFT_UUID.lower() in all_chars else None,
+                "session_start_uuid": CONSOLE_SESSION_START_UUID if CONSOLE_SESSION_START_UUID.lower() in all_chars else None,
+                "input_char": all_chars[left_inp],
+            }
+        elif right_cmd in all_chars and right_inp in all_chars:
+            return {
+                "side": "Right",
+                "command_uuid": CONSOLE_COMMAND_RIGHT_UUID,
+                "input_uuid": CONSOLE_INPUT_RIGHT_UUID,
+                "ext_response_uuid": CONSOLE_EXT_RESPONSE_RIGHT_UUID if CONSOLE_EXT_RESPONSE_RIGHT_UUID.lower() in all_chars else None,
+                "session_start_uuid": CONSOLE_SESSION_START_UUID if CONSOLE_SESSION_START_UUID.lower() in all_chars else None,
+                "input_char": all_chars[right_inp],
+            }
+        return None
+
+    async def _run_console_protocol_init(self, channel_info: dict, command_response_callback):
+        logger.info(f"Initializing Console Protocol for {self.device.address} (side={channel_info['side']})")
+        self.is_console_protocol = True
+        self.command_write_uuid = channel_info["command_uuid"]
+        self.console_input_uuid = channel_info["input_uuid"]
+        self.console_input_char = channel_info.get("input_char")
+        self.console_ext_response_uuid = channel_info.get("ext_response_uuid")
+
+        session_start = channel_info.get("session_start_uuid")
+        if session_start:
+            try:
+                await self.client.write_gatt_char(session_start, b"\x01\x00")
+                logger.info(f"Session started on {session_start}")
+            except Exception as e:
+                logger.warning(f"Failed to write console session start: {e}")
+
+        if self.console_ext_response_uuid:
+            try:
+                await self.client.start_notify(self.console_ext_response_uuid, command_response_callback)
+                logger.info(f"Subscribed to console extended response: {self.console_ext_response_uuid}")
+            except Exception as e:
+                logger.debug(f"Extended response subscription optional: {e}")
+
+        try:
+            await self.write_command(0x07, 0x01)
+        except Exception as e:
+            logger.debug(f"Console Hello command warning: {e}")
+
+        try:
+            self.controller_info = await self.read_controller_info()
+            logger.info(f"Read console controller info: {self.controller_info}")
+        except Exception as e:
+            logger.warning(f"Failed to read console controller info: {e}")
+            pid = JOYCON2_LEFT_PID if channel_info["side"] == "Left" else JOYCON2_RIGHT_PID
+            if not getattr(self, "controller_info", None):
+                self.controller_info = ControllerInfo(b"\x00" * 40)
+                self.controller_info.product_id = pid
+                self.controller_info.vendor_id = NINTENDO_VENDOR_ID
+
+        try:
+            await self.write_command(0x10, 0x01)
+        except Exception as e:
+            logger.debug(f"Console firmware info warning: {e}")
+
+        try:
+            await self.write_command(0x16, 0x01)
+        except Exception as e:
+            logger.debug(f"Console 16:01 warning: {e}")
+
+        try:
+            await self.write_command(0x0A, 0x02, b"\x03\x00\x00\x00")
+        except Exception as e:
+            logger.debug(f"Console vibration sample warning: {e}")
+
+        try:
+            player_num = getattr(self, "player_number", 1) or 1
+            led_val = LED_PATTERN.get(player_num, 0x01)
+            await self.write_command(0x09, 0x07, bytes([led_val]) + b"\x00" * 7)
+        except Exception as e:
+            logger.debug(f"Console player led warning: {e}")
+
+        try:
+            await self.write_command(0x0C, 0x02, b"\x37\x00\x00\x00")
+        except Exception as e:
+            logger.debug(f"Console features init warning: {e}")
+
+        for length, addr in [(0x40, 0x013080), (0x40, 0x1FC040), (0x10, 0x013040), (0x18, 0x013100)]:
+            try:
+                await self.read_memory(length, addr)
+            except Exception as e:
+                logger.debug(f"Console SPI read 0x{addr:06X} warning: {e}")
+
+        try:
+            await self.write_command(0x11, 0x03)
+        except Exception as e:
+            logger.debug(f"Console 11:03 warning: {e}")
+
+        try:
+            await self.read_memory(0x20, 0x013060)
+        except Exception as e:
+            logger.debug(f"Console SPI read 0x013060 warning: {e}")
+
+        try:
+            vibe_data = bytes([
+                0x01, 0x59, 0x09, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x35,
+                0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ])
+            await self.write_command(0x0A, 0x08, vibe_data)
+        except Exception as e:
+            logger.debug(f"Console vibration data warning: {e}")
+
+        try:
+            await self.write_command(0x11, 0x01)
+        except Exception as e:
+            logger.debug(f"Console 11:01 warning: {e}")
+
+        try:
+            await self.write_command(0x0C, 0x04, b"\x37\x00\x00\x00")
+        except Exception as e:
+            logger.debug(f"Console features enable warning: {e}")
+
     async def initialize(self):
         try:
             # Notifications/services are the readiness signal.  The legacy fixed
@@ -2277,18 +2501,31 @@ class Controller:
                 future = self.response_future
                 if future and not future.done():
                     expected = getattr(self, 'expected_command_id', None)
-                    if expected is not None and len(data) > 0 and data[0] != expected:
+                    sub_expected = getattr(self, 'expected_subcommand_id', None)
+                    data_slice = bytearray(data)
+                    if getattr(self, "is_console_protocol", False):
+                        found_idx = -1
+                        for i in range(len(data) - 7):
+                            if (expected is None or data[i] == expected) and data[i+1] == 0x01 and (sub_expected is None or data[i+3] == sub_expected):
+                                found_idx = i
+                                break
+                        if found_idx >= 0:
+                            data_slice = bytearray(data[found_idx:])
+                        elif expected is not None:
+                            return
+                    elif expected is not None and len(data) > 0 and data[0] != expected:
                         logger.debug(f"Ignoring unexpected command response for cmd {data[0]}, expected {expected}")
                         return
                     try:
                         loop = future.get_loop()
-                        loop.call_soon_threadsafe(future.set_result, bytearray(data))
+                        loop.call_soon_threadsafe(future.set_result, data_slice)
                     except Exception:
                         pass
             
             # Dynamic UUID discovery for SW2 Protocol (e.g. GameCube Controller)
             self.command_write_uuid = COMMAND_WRITE_UUID
             self.command_response_uuid = COMMAND_RESPONSE_UUID
+            self.is_console_protocol = False
             is_sw2_device = False
 
             # WinRT may report the link before its service cache is available.
@@ -2388,6 +2625,7 @@ class Controller:
                     and callable(getattr(self.client, "is_gamecube_channel", None))
                     and self.client.is_gamecube_channel()
                 )
+                console_channel = self._detect_console_channel()
                 _sw2_consec_fail = 0
                 for cmd_id, subcmd_id, data in sw2_init_commands:
                     try:
@@ -2402,26 +2640,36 @@ class Controller:
                     except Exception as e:
                         logger.warning(f"SW2 Init command {cmd_id:02x}:{subcmd_id:02x} failed: {e}")
                         _sw2_consec_fail += 1
+                        if console_channel is not None and _sw2_consec_fail == 1:
+                            logger.info(f"Standard SW2 command failed on {self.device.address}; falling back to Console Protocol (NYXI / clone support)")
+                            self.is_console_protocol = True
+                            break
                         if _sw2_consec_fail >= 3:
                             raise Exception(
                                 f"SW2 init aborted: {_sw2_consec_fail} consecutive command failures "
                                 f"(last: {cmd_id:02x}:{subcmd_id:02x})"
                             )
 
-            cache_hit = self._load_fast_connection_cache()
-            if not cache_hit:
-                for _ri_attempt in range(3):
-                    try:
-                        self.controller_info = await self.read_controller_info()
-                        self._system_bt_diag(
-                            "controller_info_ready",
-                            product_id=f"{self.controller_info.product_id:04x}")
-                        break
-                    except Exception as e:
-                        if _ri_attempt == 2:
-                            raise
-                        logger.warning(f"read_controller_info attempt {_ri_attempt + 1} failed: {e}; retrying in 0.5s")
-                        await asyncio.sleep(0.5)
+            if getattr(self, "is_console_protocol", False) and console_channel:
+                await self._run_console_protocol_init(console_channel, command_response_callback)
+
+            if not getattr(self, "is_console_protocol", False):
+                cache_hit = self._load_fast_connection_cache()
+                if not cache_hit:
+                    for _ri_attempt in range(3):
+                        try:
+                            self.controller_info = await self.read_controller_info()
+                            self._system_bt_diag(
+                                "controller_info_ready",
+                                product_id=f"{self.controller_info.product_id:04x}")
+                            break
+                        except Exception as e:
+                            if _ri_attempt == 2:
+                                raise
+                            logger.warning(f"read_controller_info attempt {_ri_attempt + 1} failed: {e}; retrying in 0.5s")
+                            await asyncio.sleep(0.5)
+            else:
+                cache_hit = False
 
             # GameCube AND Joy-Con 2 need input report Format 3 (0x30), like the
             # known-good 0.10.1 build. In the default format the Joy-Con's high
@@ -2429,7 +2677,7 @@ class Controller:
             # phantom ZL/ZR. Format 3 + the 0x03FFFFFF processing mask (non-GameCube)
             # together clear them. Pro Controller 2 streams a compatible format via
             # the SW2 init sequence and is left as-is.
-            if self.controller_info.product_id in (
+            if not getattr(self, "is_console_protocol", False) and self.controller_info.product_id in (
                 NSO_GAMECUBE_CONTROLLER_PID, JOYCON2_LEFT_PID, JOYCON2_RIGHT_PID
             ):
                 logger.info(f"Setting Input Mode to 0x30 (Format 3) for {self.device.address}")
@@ -2481,7 +2729,9 @@ class Controller:
             self._input_settled = False
             self._input_settle_deadline = time.time() + 1.0
 
-            if getattr(self.controller_info, 'product_id', 0) == NSO_GAMECUBE_CONTROLLER_PID:
+            if getattr(self, "is_console_protocol", False):
+                pass
+            elif getattr(self.controller_info, 'product_id', 0) == NSO_GAMECUBE_CONTROLLER_PID:
                 await self.enableFeatures(0x27)
             elif not is_sw2_device:
                 await self.enableFeatures(FEATURE_MOTION | FEATURE_MOUSE | FEATURE_MAGNOMETER)
@@ -2642,9 +2892,15 @@ class Controller:
                     # Explicitly stop notifications to prevent WinRT background callbacks from firing 
                     # after the event loop is closed, which causes RuntimeError.
                     try:
-                        await self.client.stop_notify(INPUT_REPORT_UUID)
+                        target_input_uuid = getattr(self, 'input_report_uuid', INPUT_REPORT_UUID)
+                        await self.client.stop_notify(target_input_uuid)
                     except Exception:
                         pass
+                    if getattr(self, "console_ext_response_uuid", None):
+                        try:
+                            await self.client.stop_notify(self.console_ext_response_uuid)
+                        except Exception:
+                            pass
                     try:
                         await self.client.stop_notify(COMMAND_RESPONSE_UUID)
                     except Exception:
@@ -2665,7 +2921,10 @@ class Controller:
 
     async def write_command(self, command_id: int, subcommand_id: int, command_data = b''):
         self.expected_command_id = command_id
+        self.expected_subcommand_id = subcommand_id
         command_buffer = command_id.to_bytes() + b"\x91\x01" + subcommand_id.to_bytes() + b"\x00" + len(command_data).to_bytes() + b"\x00\x00" + command_data
+        if getattr(self, "is_console_protocol", False):
+            command_buffer = b"\x00" * 17 + command_buffer
         self.response_future = asyncio.get_running_loop().create_future()
         write_uuid = getattr(self, 'command_write_uuid', COMMAND_WRITE_UUID)
         try:
@@ -3982,6 +4241,9 @@ class Controller:
             logger.warning(f"Invalid in-app joystick calibration for {self.device.address}: {e}")
 
     async def pair(self, host_mac_value=None):
+        if getattr(self, "is_console_protocol", False):
+            logger.info(f"Skipping pair handshake for console protocol controller {self.device.address}")
+            return
         # host_mac_value lets callers pair the controller to a host other than the
         # local PC Bluetooth adapter -- the ESP32-S3 bridge passes its own BLE MAC so
         # the controller bonds to the bridge and reconnects to it on a button press.
@@ -4034,7 +4296,8 @@ class Controller:
                 deadzone_cache["generation"] = settings_generation
             inputData = ControllerInputData(
                 data, self.stick_calibration, self.second_stick_calibration,
-                product_id, gc_trigger_calib, deadzone_cache["values"])
+                product_id, gc_trigger_calib, deadzone_cache["values"],
+                is_console_protocol=getattr(self, "is_console_protocol", False))
             phase_t1 = time.perf_counter_ns() if input_phase_diagnostics else 0
 
             # Connection settle gate: right after (re)connection the controller can
@@ -5521,7 +5784,23 @@ class Controller:
             except Exception as e:
                 logger.warning(f"Error subscribing to GameCube characteristics: {e}")
                 await self.client.start_notify(INPUT_REPORT_UUID, gc_input_report_callback)
+        elif getattr(self, "is_console_protocol", False):
+            input_uuid = getattr(self, "console_input_uuid", INPUT_REPORT_UUID)
+            self.input_report_uuid = input_uuid
+            console_char = getattr(self, "console_input_char", None)
+            if console_char and hasattr(console_char, "descriptors"):
+                for desc in console_char.descriptors:
+                    if "679d5510" in str(desc.uuid).lower():
+                        try:
+                            logger.info(f"Writing report rate descriptor on {desc.uuid}")
+                            await self.client.write_gatt_descriptor(desc.handle, b"\x85\x00")
+                        except Exception as e:
+                            logger.warning(f"Failed to write console report rate descriptor: {e}")
+                        break
+            logger.info(f"Subscribing to console input characteristic: {input_uuid}")
+            await self.client.start_notify(input_uuid, input_report_callback)
         else:
+            self.input_report_uuid = INPUT_REPORT_UUID
             await self.client.start_notify(INPUT_REPORT_UUID, input_report_callback)
 
     def set_input_report_callback(self, callback):
